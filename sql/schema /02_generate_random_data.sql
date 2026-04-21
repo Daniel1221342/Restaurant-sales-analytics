@@ -1,12 +1,31 @@
 -----------------------------------------------------
--- 1. GENERATE ORDERS (2023–present)
+-- 1. GENERATE ORDERS (last ~3 years)
 -----------------------------------------------------
 
-WITH Numbers AS (
-    SELECT TOP (10000)
+DECLARE @OrdersCount INT = 10000;
+DECLARE @StartDate  date = DATEADD(YEAR, -3, CAST(GETDATE() AS date));
+DECLARE @EndDate    date = CAST(GETDATE() AS date);
+DECLARE @RangeDays  int  = DATEDIFF(DAY, @StartDate, @EndDate) + 1;
+
+;WITH Numbers AS (
+    SELECT TOP (@OrdersCount)
         ROW_NUMBER() OVER (ORDER BY (SELECT NULL)) AS n
     FROM sys.objects a
     CROSS JOIN sys.objects b
+),
+R AS (
+    SELECT 
+        ID_Restauracji,
+        ROW_NUMBER() OVER (ORDER BY ID_Restauracji) AS rn,
+        COUNT(*) OVER() AS total
+    FROM Restauracje
+),
+D AS (
+    SELECT 
+        ID_Dostawcy,
+        ROW_NUMBER() OVER (ORDER BY ID_Dostawcy) AS rn,
+        COUNT(*) OVER() AS total
+    FROM Dostawcy
 )
 INSERT INTO Zamowienia (ID_Restauracji, ID_Dostawcy, Data_Zamowienia, Status)
 SELECT
@@ -14,25 +33,23 @@ SELECT
     d.ID_Dostawcy,
     x.DataZamowienia,
     CASE 
-        WHEN x.DataZamowienia < DATEADD(DAY, -30, GETDATE()) THEN 'Zrealizowane'
-        WHEN x.DataZamowienia < DATEADD(DAY, -7, GETDATE()) THEN 'W realizacji'
+        WHEN x.DataZamowienia < DATEADD(DAY, -30, @EndDate) THEN 'Zrealizowane'
+        WHEN x.DataZamowienia < DATEADD(DAY, -7,  @EndDate) THEN 'W realizacji'
         ELSE 'Nowe'
-    END
-FROM Numbers
+    END AS Status
+FROM Numbers n
 CROSS APPLY (
-    SELECT DATEADD(
-               DAY,
-               ABS(CHECKSUM(NEWID())) % DATEDIFF(DAY, '2023-01-01', GETDATE()),
-               '2023-01-01'
-           ) AS DataZamowienia
+    -- seedy zależne od n.n => per wiersz, nie "raz na cały insert"
+    SELECT
+        ABS(CHECKSUM(n.n, NEWID()))        AS seed_r,
+        ABS(CHECKSUM(n.n, NEWID(), 111))   AS seed_d,
+        ABS(CHECKSUM(n.n, NEWID(), 222))   AS seed_date
+) s
+CROSS APPLY (
+    SELECT DATEADD(DAY, (s.seed_date % @RangeDays), @StartDate) AS DataZamowienia
 ) x
-CROSS APPLY (
-    SELECT TOP 1 ID_Restauracji FROM Restauracje ORDER BY NEWID()
-) r
-CROSS APPLY (
-    SELECT TOP 1 ID_Dostawcy FROM Dostawcy ORDER BY NEWID()
-) d;
-
+JOIN R r ON r.rn = 1 + (s.seed_r % r.total)
+JOIN D d ON d.rn = 1 + (s.seed_d % d.total);
 -----------------------------------------------------
 -- 2. GENERATE ORDER DETAILS (1–5 products per order)
 -----------------------------------------------------
